@@ -268,7 +268,7 @@
     --hud-hair: rgba(51, 50, 46, .12);
     --hud-link: #3F7FB0;
     --hud-shadow:
-      0 16px 36px -10px rgba(60, 52, 33, .32),
+      0 8px 18px -8px rgba(60, 52, 33, .26),   /* 弹出期间收小模糊半径：手机上 36px 的重绘太贵 */
       0 2px 6px rgba(60, 52, 33, .07),
       inset 0 0 0 1px rgba(255, 255, 255, .82),
       inset 0 1px 0 rgba(255, 255, 255, .95),
@@ -431,13 +431,23 @@
    * 终点必须等于 .cur 的 1.12 —— 动画撤掉 class 时才不会「弹一下又缩回去」。
    * 用 animation 不用 transition：要的是冲过头的过冲感；
    * 连续换台靠「移除 class → 强制重排 → 重加」重播。 */
+  /* ⚠️ 缓动必须**按段给**。
+   * 原来整条动画共用一个 cubic-bezier(.3,1.2,.5,1)，于是"冲过头的那一下"和
+   * "收回来的那一下"用的是同一条曲线 —— 后半段被这条过冲曲线拖着走，
+   * 收尾就发黏（用户：「弹起来要缩小一丁点的时候会凝滞」）。
+   * 现在分段：0→40% 用带过冲的曲线给冲击力，40→100% 用干净的 ease-out 收住。 */
   @keyframes tvhudPop {
-    0%   { transform: translateY(0) scale(.94); }
-    40%  { transform: translateY(-6px) scale(1.18); }
+    0%   { transform: translateY(0) scale(.94); animation-timing-function: cubic-bezier(.3, 1.2, .5, 1); }
+    40%  { transform: translateY(-6px) scale(1.18); animation-timing-function: cubic-bezier(.22, .8, .3, 1); }
     100% { transform: translateY(0) scale(1.12); }
   }
   .tvhud-card.cur .tvhud-inner.is-pop {
-    animation: tvhudPop .34s cubic-bezier(.3, 1.2, .5, 1) both;
+    animation: tvhudPop .34s both;   /* 缓动在 @keyframes 里分段给，见上 */
+    /* ⚠️ 缩放期间必须提层。没有 will-change 的话，缩放的每一帧都要把卡片连同
+     * 那圈 16px 阴影重新光栅化一次 —— 手机上这就是"收尾凝滞"的来源。
+     * 提层之后：卡片只光栅化一次，之后 0.34s 里只是变换纹理，合成器自己跑，
+     * 主线程再忙也不掉帧。 */
+    will-change: transform;
     /* ⚠️ 缩放期间必须关掉背景模糊 —— 这是那个「卡顿」的唯一来源：
      * backdrop-filter 的模糊是按元素当前的像素区域每帧重新截背景再卷积的，
      * 元素一边放大一边模糊，等于每帧多做一次 16px 半径的重活（6 张卡里只要有一张在动
@@ -457,7 +467,7 @@
      * 只覆盖 --hud-glow / --hud-shadow 两个变量的值，不直接改 box-shadow。 */
     --hud-glow: 0 0 0 1px var(--ch-ink), 0 0 0 rgba(0, 0, 0, 0);
     --hud-shadow:
-      0 16px 36px -10px rgba(60, 52, 33, .32),
+      0 8px 18px -8px rgba(60, 52, 33, .26),   /* 弹出期间收小模糊半径：手机上 36px 的重绘太贵 */
       0 2px 6px rgba(60, 52, 33, .07),
       inset 0 0 0 1px rgba(255, 255, 255, 0),
       inset 0 1px 0 rgba(255, 255, 255, 0),
