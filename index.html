@@ -6857,6 +6857,19 @@ void main() {
   }
   .tw::-webkit-scrollbar-thumb:hover { background: var(--gold-light); }
 
+  /* 需求预测比对：行数多时表体内部纵向滚动，表头吸附在顶部，页面结构保持稳定 */
+  .tw.fc-tbl { max-height: 420px; overflow-y: auto; }
+  .tw.fc-tbl thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--surface);
+    box-shadow: inset 0 -1px 0 var(--border-gold);
+  }
+  .tw.fc-tbl::-webkit-scrollbar { width: 5px; height: 4px; }
+  .tw.fc-tbl::-webkit-scrollbar-thumb { background: var(--border); }
+  .tw.fc-tbl::-webkit-scrollbar-thumb:hover { background: var(--gold-light); }
+
   /* 多列表格设最小宽度：窄容器下横向滚动，而不是把单元格文字挤成竖排。
      wide = 8 列订单明细，tight = 列数少的表。 */
   .tw.wide table {
@@ -7420,6 +7433,9 @@ void main() {
 
     /* 订单头 / 订单明细 / 采购汇总：一行一卡，字段名在左、值在右 */
     .tw.cards { overflow: visible; }
+    /* 手机端卡片化为整页自然流，不做内部滚动（表头已隐藏，吸附无意义） */
+    .tw.fc-tbl { max-height: none; overflow-y: visible; }
+    .tw.fc-tbl thead th { position: static; box-shadow: none; }
     .tw.cards table,
     .tw.cards tbody,
     .tw.cards tr,
@@ -7989,23 +8005,22 @@ void main() {
     </table>
   </div>
 
-  <div class="two" data-view="review">
-    <div class="card">
-      <h2>人工复核队列</h2>
-      <p class="sub" style="margin-top:-12px;margin-bottom:14px;font-size:10.5px;letter-spacing:0.1em">建议响应时限 30 分钟</p>
-      <table class="cards">
-        <thead><tr><th>异常项</th><th>处理建议与操作</th></tr></thead>
-        <tbody id="exc"><tr><td colspan="2" class="empty">暂无</td></tr></tbody>
-      </table>
-    </div>
-    <div class="card">
-      <h2>需求预测比对</h2>
-      <p class="sub" style="margin-top:-12px;margin-bottom:14px;font-size:10.5px;letter-spacing:0.1em">在住人数驱动</p>
-      <table class="cards">
+  <div class="card" data-view="review">
+    <h2>人工复核队列</h2>
+    <p class="sub" style="margin-top:-12px;margin-bottom:14px;font-size:10.5px;letter-spacing:0.1em">建议响应时限 30 分钟</p>
+    <table class="cards">
+      <thead><tr><th>异常项</th><th>处理建议与操作</th></tr></thead>
+      <tbody id="exc"><tr><td colspan="2" class="empty">暂无</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card" data-view="review">
+    <h2>需求预测比对</h2>
+    <p class="sub" style="margin-top:-12px;margin-bottom:14px;font-size:10.5px;letter-spacing:0.1em">在住人数驱动</p>
+    <table class="cards fc-tbl">
         <thead><tr><th>门店</th><th>SKU</th><th>预测建议</th><th>实订</th><th>差异</th><th>提示</th></tr></thead>
         <tbody id="fc"><tr><td colspan="6" class="empty">暂无</td></tr></tbody>
       </table>
-    </div>
   </div>
 
   \x3C!-- ═══  输出 3  ═══ -->
