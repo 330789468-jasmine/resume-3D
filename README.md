@@ -62,18 +62,21 @@ docs/img/      README 用展示图（页面不引用）
 | **无源码特征** | `index.html` 里不能有 `sourceMappingURL` / `export function` / `import {` |
 | **暂存区地雷** | 暂存了带薪版 `index.html` 也会拦（哪怕还没 commit） |
 
-> ⚠️ 最容易踩的坑：跑过 `npm run site` 之后，暂存区里会躺着一份**带薪资**的
-> `index.html`，顺手 `git commit && git push` 就会把带薪版推上线。
-> 钩子就是为了拦这一下。
-
 **正确的发布流程**（源码仓库在 `E:\Project\career-tower`，不公开）：
 
 ```bash
 cd E:\Project\career-tower
-npm run nosalary:split                        # 构建无薪拆分版
-cp 无薪资版-拆分\index.html  ..\career-tower-site\index.html
-cp 无薪资版-拆分\audio\*.mp3 ..\career-tower-site\audio\
-cd ..\career-tower-site && git commit && git push
+npm run site                                  # 构建无薪拆分版并同步到本仓库
+cd ..\career-tower-site
+git status                                    # 确认一下：改的是无薪版
+git add -A && git commit -m "update site" && git push
 ```
+
+`npm run site` 做三件事：构建**无薪**拆分版 → 同步 `index.html` 与 `audio/` 到本仓库 →
+**清空暂存区并打印状态**（不会自动 `git add`）。
+
+> ⚠️ 它**故意不自动 stage**：以前会自动 `git add -A`，而那次同步的是**带薪版**，
+> 顺手 `git commit && git push` 就会把带薪版推上线 —— 这个坑出过五次。
+> 现在提交与否由人决定，钩子再兜底一道。
 
 确实需要绕过时：`git push --no-verify`（或 `CT_SKIP_HOOK=1 git push`）。
