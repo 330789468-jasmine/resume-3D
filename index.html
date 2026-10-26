@@ -8987,21 +8987,36 @@ function nextPoNo(supplier, dateStr) {
 
 /* ═══ 采购单状态机 ═══
    主链：待确认 → 已推送供应商 → 供应商已确认 → 已关闭
-   旁路：待确认/已推送 → 已取消 */
+   旁路：待确认/已推送 → 已取消
+   闭环：供应商回传差异 → 差异待裁决 → 裁决完毕回到供应商已确认
+   「差异待裁决」期间禁止关闭采购单，避免差异悬案被流程尾巴吞掉 */
 var PO_FLOW = {
   '待确认':       { next: ['已推送供应商', '已取消'] },
-  '已推送供应商': { next: ['供应商已确认', '已取消'] },
-  '供应商已确认': { next: ['已关闭'] },
+  '已推送供应商': { next: ['供应商已确认', '差异待裁决', '已取消'] },
+  '供应商已确认': { next: ['已关闭', '差异待裁决'] },
+  '差异待裁决':   { next: ['供应商已确认', '已推送供应商', '已关闭'] },
   '已关闭':       { next: [] },
   '已取消':       { next: [] }
 };
 var PO_STATUS_TAG = {
-  '待确认': 'gray', '已推送供应商': 'blue', '供应商已确认': 'green', '已关闭': 'gray', '已取消': 'gray'
+  '待确认': 'gray', '已推送供应商': 'blue', '供应商已确认': 'green',
+  '差异待裁决': 'yellow', '已关闭': 'gray', '已取消': 'gray'
 };
 function poCanTransit(from, to) {
   var node = PO_FLOW[from];
   if (!node) return false;
   return node.next.indexOf(to) >= 0;
+}
+/* 未决差异闸口：还有差异没裁决时，采购单不许关闭。
+   差异数据由运营后台写入 localStorage（key: supplier_diff_<采购单号>），
+   此处只读不写，保证状态机判定不依赖页面上下文。 */
+function poHasPendingDiff(poNo) {
+  try {
+    var raw = localStorage.getItem('supplier_diff_' + poNo);
+    if (!raw) return false;
+    var d = JSON.parse(raw);
+    return !!(d && d.lines && d.lines.length);
+  } catch (e) { return false; }
 }
 
 /* ═══ 订单头创建 ═══ */
@@ -9597,6 +9612,10 @@ function poTransit(poNo, to, who, reason) {
   if (!poCanTransit(from, to)) {
     return { ok: false, reason: '状态「' + from + '」不能变更为「' + to + '」' };
   }
+  /* 闸口：存在未裁决差异时禁止关闭采购单，异常不能被流程尾巴吞掉 */
+  if (to === '已关闭' && poHasPendingDiff(poNo)) {
+    return { ok: false, reason: '存在未裁决的供应商差异，请先处理差异再关闭采购单' };
+  }
   var log = cur.log ? cur.log.slice() : [];
   log.push({
     from: from, to: to, who: who || '系统',
@@ -9617,9 +9636,12 @@ function supplierPayload(poNo, supplier) {
   var by = {};
   amountLedger().forEach(function (r) {
     if (r.supplier !== supplier || !r.billable) return;
-    var rec = by[r.sku] = by[r.sku] || { sku: r.sku, name: r.name, unit: r.unit, qty: 0, price: r.price, stores: [] };
+    var rec = by[r.sku] = by[r.sku] || { sku: r.sku, name: r.name, unit: r.unit, qty: 0, price: r.price, stores: [], orderNos: [] };
     rec.qty += r.qty;
     if (r.store && rec.stores.indexOf(r.store) < 0) rec.stores.push(r.store);
+    /* 订单号随快照落库：运营回写差异时据此定位到具体订单行，
+       否则同 SKU 多门店时无法区分归属 */
+    if (r.orderNo && rec.orderNos.indexOf(r.orderNo) < 0) rec.orderNos.push(r.orderNo);
   });
   var lines = Object.keys(by).map(function (k) {
     var r = by[k];
@@ -10781,6 +10803,41 @@ function readSupDiff(poNo) {
     return raw ? JSON.parse(raw) : null;
   } catch (e) { return null; }
 }
+/* 供应商回传差异后，把采购单推进到「差异待裁决」。
+   走 poTransit 而不是直接改状态：状态机校验 + 审计留痕一步到位。 */
+function markDiffPending(poNo) {
+  var cur = poState(poNo);
+  var from = cur ? cur.status : '待确认';
+  if (from === '差异待裁决') return true;
+  /* 尚未推送的采购单不需要进入裁决态，等推送时再处理 */
+  if (from === '待确认' || from === '已取消' || from === '已关闭') return false;
+  var r = poTransit(poNo, '差异待裁决', '供应商', '供应商回传差异，等待运营裁决');
+  if (!r.ok) {
+    fsLog('采购单 ' + poNo + ' 未能进入差异待裁决：' + r.reason, 'warn');
+    return false;
+  }
+  fsLog('采购单 ' + poNo + ' 进入「差异待裁决」，等待运营处理', 'warn');
+  return true;
+}
+/* 裁决完毕（差异全部处理完）后，状态自动回到进入裁决前的状态。
+   原状态从状态流转日志里回溯（进入「差异待裁决」那条记录的 from），
+   不依赖 payload —— payload 只在供应商点确认接单时才更新，状态才更可靠。 */
+function resolveDiffState(poNo) {
+  var d = readSupDiff(poNo);
+  if (d && d.lines && d.lines.length) return false;
+  var cur = poState(poNo);
+  if (!cur || cur.status !== '差异待裁决') return false;
+  var prev = '已推送供应商';
+  (cur.log || []).forEach(function (l) {
+    if (l.to === '差异待裁决' && l.from) prev = l.from;
+  });
+  /* 只回退到「差异待裁决」允许的目标态，非法目标直接跳过 */
+  if (!poCanTransit('差异待裁决', prev)) prev = '已推送供应商';
+  var r = poTransit(poNo, prev, '运营后台', '供应商差异已裁决完毕，状态自动恢复');
+  if (!r.ok) return false;
+  fsLog('采购单 ' + poNo + ' 差异已裁决完毕，状态回到「' + prev + '」', 'ok');
+  return true;
+}
 function renderSupplierDiffs() {
   var el = document.getElementById('supDiff');
   if (!el) return;
@@ -10789,6 +10846,9 @@ function renderSupplierDiffs() {
     var poNo = state.poNos[k];
     var d = readSupDiff(poNo);
     if (!d || !d.lines || !d.lines.length) return;
+    /* 兜底：供应商端状态写入失败时，后台补推进到「差异待裁决」，
+       保证「有未决差异就不能关闭采购单」这条闸口不会被绕过 */
+    markDiffPending(poNo);
     d.lines.forEach(function (l, i) {
       var gap = Math.round((l.diffQty - l.orderQty) * 100) / 100;
       rows.push({ poNo: poNo, idx: i, l: l, gap: gap, note: d.note });
@@ -10813,11 +10873,34 @@ function acceptSupDiff(key) {
   if (!d || !d.lines[idx]) return;
   var l = d.lines[idx];
   var touched = 0;
+  /* 归属判定：优先按 orderNos 精确到订单行；退化时按 stores 限定门店。
+     两者都缺失时退到「本采购单内该 SKU 唯一」这一最弱条件 ——
+     唯一则可安全回写，多处则拒绝，宁可不改也不跨店误伤。 */
+  var orderNos = l.orderNos || [];
+  var stores = l.stores || [];
+  if (!orderNos.length && !stores.length) {
+    var inPo = state.items.filter(function (i) {
+      if (i.sku !== l.sku) return false;
+      var s = SKU[i.sku];
+      return s && s.supplier === d.supplier && !i.overridden;
+    });
+    if (inPo.length !== 1) {
+      alert('该差异缺少门店/订单归属信息，且本采购单内该 SKU 涉及 ' + inPo.length +
+            ' 处，无法安全回写。已跳过，请让供应商重新回传。');
+      return;
+    }
+    orderNos = [inPo[0].orderNo || ''];
+  }
   state.items.forEach(function (i) {
     if (i.sku !== l.sku) return;
+    if (i.overridden) return;
+    if (orderNos.length) {
+      if (orderNos.indexOf(i.orderNo || '') < 0) return;
+    } else if (stores.length) {
+      if (stores.indexOf(i.store || '') < 0) return;
+    }
     var s = SKU[i.sku];
     if (!s || s.supplier !== d.supplier) return;
-    if (i.overridden) return;
     var ratio = l.orderQty > 0 ? l.diffQty / l.orderQty : 1;
     var base = (i.qty > 0) ? i.qty : forecast(i.store, i.sku);
     if (base <= 0) return;
@@ -10839,6 +10922,8 @@ function acceptSupDiff(key) {
     reason: l.reason ? '供应商原因：' + l.reason : '供应商未说明原因，运营接受'
   });
   fsLog('已接受供应商差异：' + poNo + ' / ' + l.name + '，调整 ' + touched + ' 行', 'ok');
+  /* 裁决后若该采购单已无未决差异，状态自动回到「供应商已确认」 */
+  resolveDiffState(poNo);
   render();
 }
 /* 拒绝差异：保留原订单量，仅记录供应商反馈 */
@@ -10858,6 +10943,8 @@ function rejectSupDiff(key) {
     reason: l.reason ? '供应商原因：' + l.reason + '；运营不接受，保留原量' : '运营不接受差异，保留原量'
   });
   fsLog('已拒绝供应商差异：' + poNo + ' / ' + l.name, 'warn');
+  /* 裁决后若该采购单已无未决差异，状态自动回到「供应商已确认」 */
+  resolveDiffState(poNo);
   render();
 }
 
@@ -11302,6 +11389,7 @@ function fsProxyUrl() {
 function fsLog(msg, type) {
   type = type || 'info';
   var body = document.getElementById('fsLogBody');
+  if (!body) return;
   var item = document.createElement('div');
   item.className = 'fs-log-item fs-log-' + type;
   var t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
